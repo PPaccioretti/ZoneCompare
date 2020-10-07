@@ -1,36 +1,30 @@
-server <- function(input, output, session){
-  options(shiny.maxRequestSize=30*1024^2)
-
+server <- function(input, output, session) {
+  options(shiny.maxRequestSize = 30 * 1024 ^ 2)
+  
   readFile <- reactive({
+    # req(input$file)
+    
     if (!is.null(input$file)) {
-      tryCatch(return(read_sf(input$file$datapath)), error=function(e) {
-        if(nrow(input$file>1)) {
-          
-          MisArchivos <- sapply(input$file$datapath, function(x) {
-            # browser()
-            MyDirs <- strsplit(x, "/")[[1]]
-            MyDir <- paste0(MyDirs[-length(MyDirs)], collapse = "/", paste = "/")
-            MyFile <- MyDirs[length(MyDirs)] 
-            MyExt <- tail(strsplit(MyFile,"[.]")[[1]], 1)
-            MiCapa <- paste0(MyDir,paste0("Capa.",MyExt))
-            
-            file.rename(x, MiCapa)
-            MiCapa
-          })
-          MyDirs <- strsplit(input$file$datapath, "/")[[1]]
-          MyDir <- paste0(MyDirs[-length(MyDirs)], collapse = "/")#, paste = "/")
-           ##### SACAR CRS #####
-          return(read_sf(dsn=MyDir, crs = 4326))  
-          ###### FIN SACAR CRS #####
+      # browser()
+      tryCatch(
+        return(read_sf(input$file$datapath)),
+        error = function(e) {
+          from <- input$file$datapath
+          to <- file.path(dirname(from), basename(input$file$name))
+          file.rename(from, to)
+          # input$file$datapath <- to
+          return(read_sf(unique(dirname(from))))
         }
-      })
+      )
       
-    } else {  quake_sf <- DatosRto
-    quake_sf}
+    } else {
+      DatosEjemplo
+    }
   })
   
   output$tgtVariable <- renderUI({
     req(readFile(), input$file)
+    # browser()
     colOptions <- colnames(readFile())
     selectInput("tgtVar", label = targetVariableText, 
                 choices = colOptions, 
@@ -52,78 +46,65 @@ server <- function(input, output, session){
         plotOutput("histTgtVar"))
   })
   
-  datasetMag <- reactive({
-    readFile()
-  })
+  # datasetMag <- reactive({
+  #   req(readFile(), datasetInput(), input$tgtVar)
+  #   readFile()
+  # })
 
   #generate the leaflet map
   #set the namespace for the map
-  ns <- shiny::NS("editor")
+  # ns <- shiny::NS("editor")
 
-  readFile_cnt <- isolate(readFile())
-  
-  # qpal <- reactive({
-  #   req(readFile(), input$tgtVar)
-  #   colorQuantile("Greens", datasetMag()[[input$tgtVar]], n = 7)
-  #   })
-  # qpal_cnt <- isolate(qpal())
-  
-  lf.quakes <- leaflet(options = leafletOptions(minZoom = 0, maxZoom = 30)) %>%
-    addTiles() %>%
-    addProviderTiles("Esri.OceanBasemap",group="OceanBasemap") %>%
-    addProviderTiles("Esri.WorldImagery",group="WorldImagery") %>%
+  observe({
+    req(input$tgtVar)
+    df <- readFile()
+    # browser()
+    if (nrow(df) > 2000) {
+      df <- df[sample(nrow(df), 150),]
+    }
+    lf.quakes <<- leaflet() %>%
+      addTiles() %>%
+      addProviderTiles("Esri.OceanBasemap",group="OceanBasemap") %>%
+      addCircleMarkers(data = df,
+                       color = "lightblue",
+                       weight = 1,
+                       fillOpacity = 0.7)
+    # lf.quakes <- mapview(df)
 
-    addCircleMarkers(data = readFile_cnt,  #use the non-reactive dataset
-                     color = "lightblue",
-                     weight = 1,
-                     fillOpacity = 0.7)
+    edits <<- callModule(editMod, "editor", lf.quakes)
 
- edits <- callModule(editMod, "editor", leafmap = lf.quakes)
-
-
-#now we need to create an observer so the leaflet map can 'observe' the reactive dataset and be redrawn based on the input
-
-observeEvent(c(input$tgtVar),{
-  proxy.lf <- leafletProxy(ns("map"))
-  req(nrow(datasetMag())>0)
-
-  proxy.lf %>%
-    clearMarkers() %>%
-    addCircleMarkers(data = datasetMag(),  #use the reactive dataset generated above
-                     color = "red",
-                     weight = 1,
-                     fillOpacity = 0.7,
-                     popup = popupTable(datasetMag(), zcol = input$tgtVar))
-})
+  })
 
 
 # generate the reactive dataset based on what is drawn on the leaflet map
+  
   datasetInput <- reactive({
 
     req(edits()$finished)
+  # browser()
     Tratamientos_sf <- edits()$finished
     Tratamientos_sf$Tratamiento <- LETTERS[seq_len(nrow(Tratamientos_sf))]
     Tratamientos_sf$Area <- st_area(edits()$finished)
-    quake_intersect <- st_intersection(Tratamientos_sf, datasetMag()) #intersection between what is drawn and the reactive dataframe
+    quake_intersect <- st_intersection(Tratamientos_sf, readFile()) #intersection between what is drawn and the reactive dataframe
     quake_intersect <- st_transform(quake_intersect, 32720)
     list("trat" = Tratamientos_sf,
          "sf" = quake_intersect)
 
   })
-
-  #render a histogram with the reactive dataset as the output
-
+# 
+#   #render a histogram with the reactive dataset as the output
+# 
   output$plot <- renderPlot({
     req(datasetInput(), input$tgtVar)
     # browser()
-    
+
     ggplot(datasetInput()$sf, aes(x = !!rlang::sym(input$tgtVar))) +
       geom_histogram(aes(y = stat(count) / sum(count))) +
       ylab("Freq") +
       facet_grid(. ~ Tratamiento)
 
   })
-  
+
 
   output$tablaAreas <- renderTable({
     req(datasetInput(), input$tgtVar)
@@ -136,7 +117,7 @@ observeEvent(c(input$tgtVar),{
 
     },rownames = T)
 
-  
+
 
 
   Depuracion_dp_mv <- reactive({
